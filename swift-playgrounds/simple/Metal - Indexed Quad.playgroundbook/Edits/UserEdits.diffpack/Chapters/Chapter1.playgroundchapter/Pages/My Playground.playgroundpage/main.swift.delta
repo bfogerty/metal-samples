@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Diff</key>
+	<array>
+		<dict>
+			<key>ModifiedContent</key>
+			<string>import Metal
+import MetalKit
+import PlaygroundSupport
+import ShaderModule
+
+// Step 1 - Create a device
+let device = MTLCreateSystemDefaultDevice();
+
+// Step 2 - Create a view to be rendered into
+let frame = CGRect(x: 0, y: 0, width: 1080, height: 920)
+let view = MTKView(frame: frame, device: device)
+view.clearColor = MTLClearColor(red: 0.0, green: 1.0, blue: 0.0, alpha: 1.0)
+
+// Step 3 - Create Vertex and Index Buffers
+var vertices: [Float] = [
+    -1, 1, 0,
+    1,0,0,
+    1, -1, 0,
+    0,1,0,
+    -1, -1, 0,
+    0,0,1,
+    1,1,0,
+    1,1,0
+]
+
+var indices: [UInt32] = [
+    0,1,2,
+    0,3,1
+]
+
+let vertexBuffer = device!.makeBuffer(bytes: &amp;vertices, length: MemoryLayout&lt;Float&gt;.stride * vertices.count)
+let vertexDescriptor = MTLVertexDescriptor()
+vertexDescriptor.attributes[0].format = .float3
+vertexDescriptor.attributes[0].bufferIndex = 0
+vertexDescriptor.attributes[0].offset = 0
+vertexDescriptor.attributes[1].format = .float3
+vertexDescriptor.attributes[1].bufferIndex = 0
+vertexDescriptor.attributes[1].offset = MemoryLayout&lt;Float&gt;.stride * 3
+vertexDescriptor.layouts[0].stride = MemoryLayout&lt;Float&gt;.stride * 6
+
+let indexBuffer = device!.makeBuffer(bytes: &amp;indices, length: MemoryLayout&lt;UInt32&gt;.stride * indices.count)
+
+// Step 4 - Create Shader
+let shaderLib = try device!.makeLibrary(source: ShaderModule.shaderSource, options: nil)
+let vertexShader = shaderLib.makeFunction(name: "vertex_main")
+let fragmentShader = shaderLib.makeFunction(name: "fragment_main")
+
+// Step 5 - Create a pipeline state object
+let pipelineStateDescriptor = MTLRenderPipelineDescriptor()
+pipelineStateDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+pipelineStateDescriptor.vertexFunction = vertexShader
+pipelineStateDescriptor.fragmentFunction = fragmentShader
+pipelineStateDescriptor.vertexDescriptor = vertexDescriptor
+let pipelineState = try device!.makeRenderPipelineState(descriptor: pipelineStateDescriptor)
+
+// Step 6 - Create the command queue and command buffer
+let commandQueue = device?.makeCommandQueue()
+let cmdBuffer = commandQueue?.makeCommandBuffer()
+
+// Step 7 - Create a render command encoder
+let renderPassDescriptor = view.currentRenderPassDescriptor
+let renderEncoder = cmdBuffer!.makeRenderCommandEncoder(descriptor: renderPassDescriptor!)
+
+// Step 8 - Populate the Command buffer with commands
+renderEncoder!.setRenderPipelineState(pipelineState)
+renderEncoder!.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+renderEncoder!.drawIndexedPrimitives(type: MTLPrimitiveType.triangle, indexCount: indices.count, indexType: MTLIndexType.uint32, indexBuffer: indexBuffer!, indexBufferOffset: 0)
+
+renderEncoder?.endEncoding()
+
+cmdBuffer!.addCompletedHandler{_ in 
+    print("Commands have been executed on GPU!")
+}
+
+// Step 9 - Present to the swapchain and execute the command buffer
+cmdBuffer!.present(view.currentDrawable!)
+cmdBuffer!.commit()
+PlaygroundPage.current.liveView = view;
+
+
+
+
+</string>
+			<key>ModifiedRange</key>
+			<string>{1, 2912}</string>
+			<key>OriginalContent</key>
+			<string></string>
+			<key>OriginalRange</key>
+			<string>{1, 0}</string>
+		</dict>
+	</array>
+	<key>File</key>
+	<string>Chapters/Chapter1.playgroundchapter/Pages/My Playground.playgroundpage/main.swift</string>
+</dict>
+</plist>
