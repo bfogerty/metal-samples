@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Diff</key>
+	<array>
+		<dict>
+			<key>ModifiedContent</key>
+			<string>import Metal
+import MetalKit
+import PlaygroundSupport
+import simd
+import ShaderModule
+import MathLibrary
+
+struct Uniforms {
+    var worldMatrix : float4x4
+    var viewMatrix : float4x4
+    var projectionMatrix : float4x4
+    var aspectRatio : Float
+}
+
+class Renderer : NSObject, MTKViewDelegate {
+    
+    public var device : MTLDevice!
+    var commandQueue : MTLCommandQueue!
+    var pipelineState : MTLRenderPipelineState!
+    var depthStencilState : MTLDepthStencilState!
+    var vertexBuffer : MTLBuffer!
+    var indexBuffer : MTLBuffer!
+    var colorBuffer : MTLBuffer!
+    var uniformBuffer : MTLBuffer!
+    var degrees : Float!
+    let gpuLock = DispatchSemaphore(value: 1)
+    
+    var indices: [UInt32] = [
+        0,3,1,
+        0,2,3,
+        
+        2,5,3,
+        2,4,5,
+        
+        4,7,5,
+        4,6,7,
+        
+        6,1,7,
+        6,0,1,
+        
+        6,2,0,
+        6,4,2,
+        
+        7,3,1,
+        7,5,3
+    ]
+    
+    override init() {
+        super.init()
+        // Step 1 - Create a device
+        device = MTLCreateSystemDefaultDevice();
+        
+        // Step 3 - Create Vertex and Index Buffers
+        let s = Float(0.5)
+        var vertices: [Float] = [
+                        -s, s, -s, // 0
+                        0,1,0,
+            
+                        -s, -s, -s, // 1
+                        0,0,0,
+            
+                        s,s,-s, // 2
+                        1,1,0,
+            
+                        s, -s, -s, // 3
+                        1,0,0,
+            
+                        s,s,s, // 4
+                        1,1,1,
+            
+                        s,-s,s, // 5
+                        1,0,1,
+            
+                        -s,s,s, // 6
+                        0,1,1,
+
+                        -s,-s,s, // 7
+                        0,0,1,
+                    ]
+        
+        vertexBuffer = device!.makeBuffer(bytes: &amp;vertices, length: MemoryLayout&lt;Float&gt;.stride * vertices.count)
+        let vertexDescriptor = MTLVertexDescriptor()
+        vertexDescriptor.attributes[0].format = .float3
+        vertexDescriptor.attributes[0].bufferIndex = 0
+        vertexDescriptor.attributes[0].offset = 0
+        vertexDescriptor.attributes[1].format = .float3
+        vertexDescriptor.attributes[1].bufferIndex = 0
+        vertexDescriptor.attributes[1].offset = MemoryLayout&lt;Float&gt;.stride * 3
+        vertexDescriptor.layouts[0].stride = MemoryLayout&lt;Float&gt;.stride * 6
+        
+        var uniformData = Uniforms(worldMatrix: simd_float4x4(), viewMatrix: simd_float4x4(), projectionMatrix:simd_float4x4(), aspectRatio: 1.0)
+        uniformBuffer = device!.makeBuffer(bytes:&amp;uniformData, length: MemoryLayout&lt;Uniforms&gt;.stride)
+        
+        indexBuffer = device!.makeBuffer(bytes: &amp;indices, length: MemoryLayout&lt;UInt32&gt;.stride * indices.count)
+        
+        // Step 4 - Create Shader
+        var shaderLib : MTLLibrary
+        do
+        {
+            shaderLib = try device!.makeLibrary(source: ShaderModule.shaderSource, options: nil)
+            let vertexShader = shaderLib.makeFunction(name: "vertex_main")
+            let fragmentShader = shaderLib.makeFunction(name: "fragment_main")
+            
+            // Step X - Create the Depth/Stencil State
+            var depthStencilDescriptor = MTLDepthStencilDescriptor()
+            depthStencilDescriptor.depthCompareFunction = .less
+            depthStencilDescriptor.isDepthWriteEnabled = true
+            depthStencilState = device!.makeDepthStencilState(descriptor: depthStencilDescriptor)
+
+            // Step 5 - Create a pipeline state object
+            let pipelineStateDescriptor = MTLRenderPipelineDescriptor()
+            pipelineStateDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            pipelineStateDescriptor.depthAttachmentPixelFormat = .depth32Float
+            pipelineStateDescriptor.vertexFunction = vertexShader
+            pipelineStateDescriptor.fragmentFunction = fragmentShader
+            pipelineStateDescriptor.vertexDescriptor = vertexDescriptor
+            pipelineState = try device!.makeRenderPipelineState(descriptor: pipelineStateDescriptor)
+            commandQueue = device!.makeCommandQueue()
+        } catch {}
+        
+        degrees = 0.0
+        
+        }
+    
+    func draw(in view: MTKView) {
+        
+        gpuLock.wait()
+        
+        let aspectRatio = Float(view.drawableSize.width / view.drawableSize.height)
+
+        degrees += 1
+        let r = degrees.degreesToRadians
+        var worldMatrix = float4x4(rotation: [r,r,r])
+        var viewMatrix = float4x4(translation: [0,0,-5]).inverse
+        let projectionMatrix =
+                    float4x4( projectionFov: Float(45).degreesToRadians, near: 1, far: 100, aspect: aspectRatio)        
+        
+        let uniformBufferPtr = uniformBuffer.contents().bindMemory(to: Uniforms.self, capacity: 1)
+        uniformBufferPtr.pointee.worldMatrix = worldMatrix
+        uniformBufferPtr.pointee.viewMatrix = viewMatrix
+        uniformBufferPtr.pointee.projectionMatrix = projectionMatrix
+        uniformBufferPtr.pointee.aspectRatio = aspectRatio
+
+        // Step 6 - Create the command queue and command buffer
+        let cmdBuffer = commandQueue?.makeCommandBuffer()
+
+        // Step 7 - Create a render command encoder
+        var renderPassDescriptor = view.currentRenderPassDescriptor
+        let renderEncoder = cmdBuffer!.makeRenderCommandEncoder(descriptor: renderPassDescriptor!)
+        
+        // Step 8 - Populate the Command buffer with commands
+        renderEncoder!.setRenderPipelineState(pipelineState)
+        renderEncoder!.setDepthStencilState(depthStencilState)
+        renderEncoder?.setTriangleFillMode(MTLTriangleFillMode.fill)
+        renderEncoder!.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+        renderEncoder!.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
+
+        renderEncoder!.drawIndexedPrimitives(type: MTLPrimitiveType.triangle, indexCount: indices.count, indexType: MTLIndexType.uint32, indexBuffer: indexBuffer!, indexBufferOffset: 0)
+
+        renderEncoder?.endEncoding()
+
+        cmdBuffer?.addCompletedHandler{_ in
+            self.gpuLock.signal()
+        }
+        
+        // Step 9 - Present to the swapchain and execute the command buffer
+        cmdBuffer!.present(view.currentDrawable!)
+        cmdBuffer!.commit()
+        }
+    
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        // Sample code
+        }
+}
+
+// Step 2 - Create a view to be rendered into
+let delegate = Renderer()
+let frame = CGRect(x: 0, y: 0, width: 1080, height: 920)
+let view = MTKView(frame: frame, device: delegate.device)
+view.delegate = delegate;
+view.depthStencilPixelFormat = .depth32Float
+
+let c = 0.2
+view.clearColor = MTLClearColor(red: c, green: c, blue: c, alpha: 1.0)
+PlaygroundPage.current.liveView = view;
+
+
+
+
+</string>
+			<key>ModifiedRange</key>
+			<string>{1, 6860}</string>
+			<key>OriginalContent</key>
+			<string></string>
+			<key>OriginalRange</key>
+			<string>{1, 0}</string>
+		</dict>
+	</array>
+	<key>File</key>
+	<string>Chapters/Chapter1.playgroundchapter/Pages/My Playground.playgroundpage/main.swift</string>
+</dict>
+</plist>
