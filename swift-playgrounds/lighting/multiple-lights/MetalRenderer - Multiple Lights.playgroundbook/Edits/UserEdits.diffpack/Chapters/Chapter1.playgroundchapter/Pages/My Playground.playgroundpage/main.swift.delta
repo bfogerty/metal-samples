@@ -1,0 +1,320 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Diff</key>
+	<array>
+		<dict>
+			<key>ModifiedContent</key>
+			<string>import Metal
+import MetalKit
+import PlaygroundSupport
+import simd
+import ShaderModule
+import MathLibrary
+
+var time: Float = 0;
+let instanceCount = 1
+struct InstanceData
+{
+    var worldMatrix : float4x4
+}
+
+struct LightData
+{
+    var lightType : Int
+    var worldPosition : float3
+    var diffuseColor : float3
+    var specularColor : float3
+    var specularIntensity : Float
+    var attenuation : float3
+    var coneAngle : Float
+    var coneDirection : float3
+    var coneAttenuation : Float
+}
+
+func buildDefaultLight()-&gt; LightData
+{
+    var lightData : LightData = LightData(lightType: 0, worldPosition: [0,0,0], diffuseColor: [0.3,0.3,0.3], specularColor: [0.3,0.3,0.3], specularIntensity: 1000, attenuation: [1.0,0,0], coneAngle: 0, coneDirection: [0,0,1], coneAttenuation: 1)
+    
+    return lightData
+}
+
+var lights: [LightData] = []
+var light = buildDefaultLight()
+light.worldPosition = [0,0,-10]
+light.diffuseColor = [1,1,1]
+lights.append(light)
+
+light = buildDefaultLight()
+light.worldPosition = [100,0,-10]
+light.diffuseColor = [0,0,1]
+light.specularColor = [1,1,1]
+//lights.append(light)
+
+light = buildDefaultLight()
+light.worldPosition = [0,1000,0]
+light.diffuseColor = [0,0.5,0]
+light.specularColor = [1,1,1]
+//lights.append(light)
+
+light = buildDefaultLight()
+light.worldPosition = [0,-1000,0]
+light.diffuseColor = [0.5,0.5,0]
+light.specularColor = [1,1,1]
+//lights.append(light)
+
+light = buildDefaultLight()
+light.lightType = 1
+light.worldPosition = [0,-10,0]
+light.diffuseColor = [0,1,0]
+light.specularColor = [1,1,1]
+light.coneAngle = Float(40).degreesToRadians
+light.coneDirection = [0,1,0]
+light.coneAttenuation = 8
+//lights.append(light)
+
+light.lightType = 1
+light.worldPosition = [0,1,-10]
+light.diffuseColor = [5,1.0,1.0]
+light.specularColor = [1,1,1]
+light.attenuation = [1,0,0]
+light.coneAngle = Float(2).degreesToRadians
+light.coneDirection = [0,0,1]
+light.coneAttenuation = 1
+lights.append(light)
+
+struct PerFrameUniform {
+    var viewMatrix : float4x4
+    var projectionMatrix : float4x4
+    var cameraPositionInWorldSpace : float3
+    var lightCount : Int
+}
+
+enum TextureController {
+    static var textures: [String: MTLTexture] = [:]
+    
+    static func loadTexture(device: MTLDevice, filename: String) throws -&gt; MTLTexture?
+    {
+        let textureLoader = MTKTextureLoader(device: device)
+        let textureLoaderOptions: [MTKTextureLoader.Option: Any] = [.origin: MTKTextureLoader.Origin.bottomLeft]
+        let fileExtension = URL(fileURLWithPath: filename).pathExtension.isEmpty ? "png" : nil
+        
+        guard let url = Bundle.main.url(forResource: filename,
+                                        withExtension: fileExtension)
+        else{
+            print("Failed to load filename")
+            return nil
+        }
+        let texture = try textureLoader.newTexture(URL: url, options: textureLoaderOptions)
+        return texture
+    }
+    
+    static func texture(device: MTLDevice, filename: String) -&gt; MTLTexture? {
+        if let texture = textures[filename] {
+            return texture
+        }
+        
+        let texture = try? loadTexture(device: device, filename: filename)
+        if texture != nil {
+            textures[filename] = texture
+        }
+        return texture
+    }
+}
+
+class Renderer : NSObject, MTKViewDelegate {
+    
+    public var device : MTLDevice!
+    var commandQueue : MTLCommandQueue!
+    var pipelineState : MTLRenderPipelineState!
+    var depthStencilState : MTLDepthStencilState!
+    var mtkMesh:  MTKMesh!
+    var perFrameUniformBuffer : MTLBuffer!
+    var instanceDataBuffer : MTLBuffer!
+    var instanceDataBufferPtr : UnsafeMutablePointer&lt;InstanceData&gt;!
+    var modelTexture : MTLTexture!
+    var degrees : Float!
+    let gpuLock = DispatchSemaphore(value: 1)
+    
+    override init() {
+        super.init()
+        // Step 1 - Create a device
+        device = MTLCreateSystemDefaultDevice();
+        
+        let modelAsset = #fileLiteral(resourceName: "tekka.obj")
+        let modelFilename = modelAsset.lastPathComponent
+        guard let modelURL = Bundle.main.url(forResource: modelFilename, withExtension: nil)
+        else{
+            fatalError()
+        }
+        
+        let modelTextureAsset = #fileLiteral(resourceName: "blade_blue.png")
+        let textureFilename = modelTextureAsset.lastPathComponent
+        try? TextureController.loadTexture(device: device, filename: textureFilename)
+        modelTexture = TextureController.texture(device: device, filename: textureFilename)
+        
+        // Step 3 - Create Vertex and Index Buffers
+        var attributeOffset = 0
+        let vertexDescriptor = MTLVertexDescriptor()
+        vertexDescriptor.attributes[0].format = .float3
+        vertexDescriptor.attributes[0].bufferIndex = 0
+        vertexDescriptor.attributes[0].offset = attributeOffset
+        attributeOffset += MemoryLayout&lt;float3&gt;.stride
+            
+        vertexDescriptor.attributes[1].format = .float2
+        vertexDescriptor.attributes[1].bufferIndex = 0
+        vertexDescriptor.attributes[1].offset = attributeOffset
+        attributeOffset += MemoryLayout&lt;float2&gt;.stride
+            
+        vertexDescriptor.attributes[2].format = .float3
+        vertexDescriptor.attributes[2].bufferIndex = 0
+        vertexDescriptor.attributes[2].offset = attributeOffset
+        attributeOffset += MemoryLayout&lt;float3&gt;.stride
+        
+        vertexDescriptor.layouts[0].stride = attributeOffset
+        
+        let meshDescriptor = MTKModelIOVertexDescriptorFromMetal(vertexDescriptor)
+        (meshDescriptor.attributes[0] as! MDLVertexAttribute).name = MDLVertexAttributePosition
+        (meshDescriptor.attributes[1] as! MDLVertexAttribute).name = MDLVertexAttributeTextureCoordinate
+        (meshDescriptor.attributes[2] as! MDLVertexAttribute).name = MDLVertexAttributeNormal
+        
+        let meshBufferAllocator = MTKMeshBufferAllocator(device: device)
+        let mdlAsset = MDLAsset(url: modelURL, vertexDescriptor: meshDescriptor,bufferAllocator: meshBufferAllocator)
+        let mdlMesh = mdlAsset.childObjects(of: MDLMesh.self).first as! MDLMesh
+        do {
+            mtkMesh = try MTKMesh(mesh: mdlMesh, device: device)
+        } catch {}
+        
+        var perFrameUniformBufferData = PerFrameUniform(viewMatrix: simd_float4x4(), projectionMatrix:simd_float4x4(), cameraPositionInWorldSpace: simd_float3(), lightCount: lights.count)
+        perFrameUniformBuffer = device!.makeBuffer(bytes:&amp;perFrameUniformBufferData, length: MemoryLayout&lt;PerFrameUniform&gt;.stride)
+        
+        var worldMatrix = float4x4(translation: [1,0,0]);
+        var instanceData = InstanceData(worldMatrix: worldMatrix);
+        
+        instanceDataBuffer = device!.makeBuffer(bytes: &amp;instanceData, length: MemoryLayout&lt;InstanceData&gt;.stride * instanceCount)
+        instanceDataBufferPtr = instanceDataBuffer.contents().bindMemory(to: InstanceData.self, capacity: instanceCount)
+        
+        // Step 4 - Create Shader
+        var shaderLib : MTLLibrary
+        do
+            {
+                shaderLib = try device!.makeLibrary(source: ShaderModule.shaderSource, options: nil)
+                let vertexShader = shaderLib.makeFunction(name: "vertex_main")
+                let fragmentShader = shaderLib.makeFunction(name: "fragment_main")
+                
+                // Step X - Create the Depth/Stencil State
+                var depthStencilDescriptor = MTLDepthStencilDescriptor()
+                depthStencilDescriptor.depthCompareFunction = .less
+                depthStencilDescriptor.isDepthWriteEnabled = true
+                depthStencilState = device!.makeDepthStencilState(descriptor: depthStencilDescriptor)
+                
+                // Step 5 - Create a pipeline state object
+                let pipelineStateDescriptor = MTLRenderPipelineDescriptor()
+                pipelineStateDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+                pipelineStateDescriptor.depthAttachmentPixelFormat = .depth32Float
+                pipelineStateDescriptor.vertexFunction = vertexShader
+                pipelineStateDescriptor.fragmentFunction = fragmentShader
+                pipelineStateDescriptor.vertexDescriptor = vertexDescriptor
+                pipelineState = try device!.makeRenderPipelineState(descriptor: pipelineStateDescriptor)
+                commandQueue = device!.makeCommandQueue()
+            } catch {}
+        
+        degrees = 0.0
+        
+    }
+    
+    func draw(in view: MTKView) {
+        
+        gpuLock.wait()
+        
+        let aspectRatio = Float(view.drawableSize.width / view.drawableSize.height)
+        
+        degrees += 1
+        let r = degrees.degreesToRadians;
+        
+        let t = sin(r) * 0.5 + 0.5
+        let y = ((1-t)*(-0.05)) + (t*0.05);
+        lights[1].coneDirection.y = y;
+        
+        var worldMatrix = float4x4(translation: [0,0,0]) * float4x4(rotation: [0,r,0]) * float4x4(scaling: 0.5)
+            
+        instanceDataBufferPtr.advanced(by: 0).pointee.worldMatrix = worldMatrix;
+        
+        var cameraPositionInWorldSpace : float3 = [0,0.5,-2];
+        var viewMatrix = float4x4(translation: cameraPositionInWorldSpace).inverse
+        let projectionMatrix = float4x4( projectionFov: Float(45).degreesToRadians, near: 1, far: 100, aspect: aspectRatio)
+        
+        let perFrameUniformBufferPtr = perFrameUniformBuffer.contents().bindMemory(to: PerFrameUniform.self, capacity: 1)
+        perFrameUniformBufferPtr.pointee.viewMatrix = viewMatrix
+        perFrameUniformBufferPtr.pointee.projectionMatrix = projectionMatrix
+        perFrameUniformBufferPtr.pointee.cameraPositionInWorldSpace = cameraPositionInWorldSpace
+        perFrameUniformBufferPtr.pointee.lightCount = lights.count
+        
+        // Step 6 - Create the command queue and command buffer
+        let cmdBuffer = commandQueue?.makeCommandBuffer()
+        
+        // Step 7 - Create a render command encoder
+        var renderPassDescriptor = view.currentRenderPassDescriptor
+        let renderEncoder = cmdBuffer!.makeRenderCommandEncoder(descriptor: renderPassDescriptor!)
+        
+        // Step 8 - Populate the Command buffer with commands
+        guard let submesh = mtkMesh.submeshes.first else {
+            fatalError()
+        }
+        let vertexBuffer = mtkMesh.vertexBuffers[0].buffer
+        renderEncoder!.setRenderPipelineState(pipelineState)
+        renderEncoder!.setDepthStencilState(depthStencilState)
+        renderEncoder?.setTriangleFillMode(MTLTriangleFillMode.fill)
+        renderEncoder!.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+        renderEncoder!.setVertexBuffer(perFrameUniformBuffer, offset: 0, index: 1)
+        renderEncoder!.setVertexBuffer(instanceDataBuffer, offset: 0, index: 2)
+        
+        renderEncoder!.setFragmentBuffer(perFrameUniformBuffer, offset: 0, index: 0)
+        renderEncoder!.setFragmentBytes(lights, length: MemoryLayout&lt;LightData&gt;.stride * lights.count, index: 1)
+        
+        renderEncoder!.setFragmentTexture(modelTexture, index: 0)
+        
+        renderEncoder!.drawIndexedPrimitives(type: MTLPrimitiveType.triangle, indexCount: submesh.indexCount, indexType: submesh.indexType, indexBuffer: submesh.indexBuffer.buffer, indexBufferOffset: 0, instanceCount: instanceCount)
+        
+        renderEncoder?.endEncoding()
+        
+        cmdBuffer?.addCompletedHandler{_ in
+            self.gpuLock.signal()
+            time = time + 1
+        }
+        
+        // Step 9 - Present to the swapchain and execute the command buffer
+        cmdBuffer!.present(view.currentDrawable!)
+        cmdBuffer!.commit()
+    }
+    
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        // Sample code
+    }
+}
+
+// Step 2 - Create a view to be rendered into
+let delegate = Renderer()
+let frame = CGRect(x: 0, y: 0, width: 1080, height: 920)
+let view = MTKView(frame: frame, device: delegate.device)
+view.delegate = delegate;
+view.depthStencilPixelFormat = .depth32Float
+
+let c = 0.4
+view.clearColor = MTLClearColor(red: c, green: c, blue: c, alpha: 1.0)
+PlaygroundPage.current.liveView = view
+
+</string>
+			<key>ModifiedRange</key>
+			<string>{1, 12091}</string>
+			<key>OriginalContent</key>
+			<string></string>
+			<key>OriginalRange</key>
+			<string>{1, 0}</string>
+		</dict>
+	</array>
+	<key>File</key>
+	<string>Chapters/Chapter1.playgroundchapter/Pages/My Playground.playgroundpage/main.swift</string>
+</dict>
+</plist>
